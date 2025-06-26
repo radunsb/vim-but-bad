@@ -1,3 +1,8 @@
+/***
+STUFF ABOUT THE PROGRAM GOES HERE
+***/
+
+
 /*** INCLUDES ***/
 
 #define _DEFAULT_SOURCE
@@ -37,6 +42,12 @@ enum editorKey {
 	PAGE_DOWN
 };
 
+enum editorHighlight{
+	HL_NORMAL = 0,
+	HL_NUMBER,
+	HL_MATCH
+};
+
 /*** DATA ***/
 
 typedef struct erow {
@@ -44,6 +55,7 @@ typedef struct erow {
 	int rsize;
 	char *chars;
 	char *render;
+	unsigned char *hl;
 } erow;
 
 struct editorConfig{
@@ -191,6 +203,46 @@ int getWindowSize(int *rows, int *cols){
 	}
 }
 
+/*** SYNTAX HIGHLIGHTING ***/
+
+int is_separator(int c){
+	return isspace(c) || c == '\0' || strchr(",.()+-/*=~%<>[];", c) != NULL;
+}
+
+//Go through a row and update the highlighting of each character
+void editorUpdateSyntax(erow *row){
+	//Start by filling the hl array with the default value
+	row->hl = realloc(row->hl, row->rsize);
+	memset(row->hl, HL_NORMAL, row->rsize);
+
+	int prev_sep = 1;
+
+	int i = 0;
+	while (i < row->rsize){
+		char c = row->render[i];
+		unsigned char prev_hl = (i > 0) ? row->hl[i - 1] : HL_NORMAL;
+
+		if ((isdigit(c) && (prev_sep || prev_hl == HL_NUMBER)) ||
+			(c == '.' && prev_hl == HL_NUMBER)) {
+			row->hl[i] = HL_NUMBER;
+			i++;
+			prev_sep = 0;
+			continue;
+		}
+		
+		prev_sep = is_separator(c);
+		i++;
+	}
+}
+
+int editorSyntaxToColor(int hl){
+	switch (hl) {
+		case HL_NUMBER: return 31;
+		case HL_MATCH: return 34;
+		default: return 37;
+	}
+}
+
 /*** ROW OPERATIONS ***/
 
 //Convert cursor position in the raw string to cursor position in the rendered string
@@ -242,6 +294,8 @@ void editorUpdateRow(erow *row){
 	}
 	row->render[idx] = '\0';
 	row->rsize = idx;
+
+	editorUpdateSyntax(row);
 }
 
 void editorInsertRow(int at, char *s, size_t len){
@@ -257,6 +311,7 @@ void editorInsertRow(int at, char *s, size_t len){
 	//update row for rendering
 	E.row[at].rsize = 0;
 	E.row[at].render = NULL;
+	E.row[at].hl = NULL;
 	editorUpdateRow(&E.row[at]);
 
 	E.numrows++;
@@ -266,6 +321,7 @@ void editorInsertRow(int at, char *s, size_t len){
 void editorFreeRow(erow *row){
 	free(row->render);
 	free(row->chars);
+	free(row->hl);
 }
 
 //remove memory for a row if we backspace at the beginning of a line
@@ -397,8 +453,9 @@ void editorOpen(char *filename){
 	ssize_t linelen;
 	//Look at each line and copy its contents to our editorConfig struct 
 	while ((linelen = getline(&line, &linecap, fp)) != -1){
-		while(linelen > 0 && (line[linelen-1] == '\n'|| line[linelen-1] == '\r'))
+		while(linelen > 0 && (line[linelen-1] == '\n'|| line[linelen-1] == '\r')){
 			linelen--;
+		}
 		editorInsertRow(E.numrows, line, linelen);
 	}
 	free(line);
@@ -439,16 +496,29 @@ void editorSave(){
 
 void editorFindCallback(char *query, int key){
 	static int last_match = -1;
-	static int direction = 1;	
+	static int direction = 1;
 
+	static int saved_hl_line;
+	static char *saved_hl = NULL;
+	//If we have a stored highlighted_line, restored that before we do anything else
+	if (saved_hl) {
+		//Can use saved_hl_line as index because file not modifiable in find state. will need to change if
+		//that functionality is modified
+		memcpy(E.row[saved_hl_line].hl, saved_hl, E.row[saved_hl_line].rsize);
+		free(saved_hl);
+		saved_hl = NULL;
+	}	
+	//Finish if we press escape and reset everything
 	if (key == '\r' || key == '\x1b'){
 		last_match = -1;
 		direction = 1;
 		return;
 	}
+	//Find next instance
 	else if (key == ARROW_RIGHT || key == ARROW_DOWN){
 		direction = 1;
 	}
+	//Find previous instance
 	else if (key == ARROW_LEFT || key == ARROW_UP){
 		direction = -1;
 	}
@@ -465,7 +535,7 @@ void editorFindCallback(char *query, int key){
 		current += direction;
 		if (current == -1) current = E.numrows - 1;
 		else if (current == E.numrows) current = 0;
-
+		//See if our query is a substring of the current row
 		erow *row = &E.row[current];
 		char *match = strstr(row->render, query);
 		if (match){
@@ -473,6 +543,12 @@ void editorFindCallback(char *query, int key){
 			E.cy = current;
 			E.cx = editorRowRxToCx(row, match - row->render);
 			E.rowoff = E.numrows;
+			//Save the non-highlighted text so we can restore the line when we exit the find state
+			saved_hl_line = current;
+			saved_hl = malloc(row->size);
+			memcpy(saved_hl, row->hl, row->rsize);
+			//Highlight the matching part of the text
+			memset(&row->hl[match - row->render], HL_MATCH, strlen(query));
 			break;
 		}
 	}
@@ -576,7 +652,34 @@ void editorDrawRows(struct abuf *ab){
 			int len = E.row[filerow].rsize - E.coloff;
 			if (len < 0) len = 0;
 			if (len > E.screencols) len = E.screencols;
-			abAppend(ab, &E.row[filerow].render[E.coloff], len);
+			char *c = &E.row[filerow].render[E.coloff];
+			unsigned char *hl = &E.row[filerow].hl[E.coloff];
+			//store the current color so we don't have to put an escape sequence every time
+			int current_color = -1;
+			//iterate through characters to render to adjust for syntax highlighting
+			int j;
+			for (j = 0; j < len; j++){
+				//make normal characters normal (waow)
+				if (hl[j] == HL_NORMAL){
+					if (current_color != -1){
+						abAppend(ab, "\x1b[39m", 5);
+						current_color = -1;
+					}
+					abAppend(ab, &c[j], 1);
+				}
+				//print the color escape sequence into the row before the character
+				else{
+					int color = editorSyntaxToColor(hl[j]);
+					if (color != current_color){
+						current_color = color;
+						char buf[32];
+						int clen = snprintf(buf, sizeof(buf), "\x1b[%dm", color);
+						abAppend(ab, buf, clen);
+					}
+					abAppend(ab, &c[j], 1);
+				}
+			}
+			abAppend(ab, "\x1b[39m", 5);
 		}
 		//erase what's currently in each line as we draw the rows
 		abAppend(ab, "\x1b[K", 3);
@@ -849,3 +952,4 @@ int main(int argc, char *argv[]){
 	}
 	return 0;
 }
+
