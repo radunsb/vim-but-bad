@@ -93,6 +93,7 @@ struct editorConfig{
 	time_t statusmsg_time;
 	struct editorSyntax *syntax;
 	struct termios orig_termios;
+	int ln_length;
 };
 
 struct editorConfig E;
@@ -473,7 +474,8 @@ void editorInsertRow(int at, char *s, size_t len){
 	for (int j = at + 1; j <= E.numrows; j++) E.row[j].idx++;
 
 	E.row[at].idx = at;
-
+	
+	len += E.ln_length;
 	//copy the chars of s into the erow
 	E.row[at].size = len;
 	E.row[at].chars = malloc(len+1);
@@ -543,7 +545,7 @@ void editorInsertChar(int c){
 	if (E.cy == E.numrows){
 		editorInsertRow(E.numrows, "", 0);
 	}
-	editorRowInsertChar(&E.row[E.cy], E.cx, c);
+	editorRowInsertChar(&E.row[E.cy], E.cx - E.ln_length, c);
 	E.cx++;
 }
 
@@ -572,12 +574,12 @@ void editorDelChar(){
 	//dont do anything if past the end of the file
 	if (E.cy == E.numrows) return;
 	//dont do anything if we're at the beginning of the file
-	if (E.cx == 0 && E.cy == 0) return;
+	if (E.cx <= E.ln_length && E.cy == 0) return;
 
 	erow *row = &E.row[E.cy];
 	//delete character if not on the first character of the row
-	if (E.cx > 0){
-		editorRowDelChar(row, E.cx - 1);
+	if (E.cx > E.ln_length){
+		editorRowDelChar(row, E.cx - E.ln_length - 1);
 		E.cx--;
 	}
 	//delete row if on the first character of the row
@@ -803,7 +805,21 @@ void editorScroll(){
 void editorDrawRows(struct abuf *ab){
 	int y;
 	for (y = 0; y < E.screenrows; y++) {
+		int lineNumLen = 0;
+		int n = E.numrows;
+		do {
+			n /= 10;
+			lineNumLen++;
+		} while (n != 0);
 		int filerow = y + E.rowoff;
+		char filerowstr[lineNumLen];
+		sprintf(filerowstr, "%d", filerow);
+		int numberPadding = lineNumLen - strlen(filerowstr);
+		memset(filerowstr + strlen(filerowstr), ' ', numberPadding);
+		abAppend(ab, filerowstr, lineNumLen);
+		abAppend(ab, "|", 1);
+		E.ln_length = lineNumLen + 1;
+		if(E.cx < E.ln_length) E.cx = E.ln_length;
 		if (filerow >= E.numrows){
 			//Create welcome message a third of the way down the screen
 			//Only if there isn't a file being loaded
@@ -825,7 +841,7 @@ void editorDrawRows(struct abuf *ab){
 				abAppend(ab, "~", 1);
 			}
 		}
-		else{
+		else {
 			int len = E.row[filerow].rsize - E.coloff;
 			if (len < 0) len = 0;
 			if (len > E.screencols) len = E.screencols;
@@ -994,21 +1010,21 @@ void editorMoveCursor(int key){
 	//Use WASD to move the cursor
 	switch (key) {
 		case ARROW_LEFT:
-			if(E.cx != 0){
+			if(E.cx != E.ln_length){
 				E.cx--;
 			}
 			//If at beginning of row, move to the end of the row above this one
 			else if (E.cy > 0){
 				E.cy--;
-				E.cx = E.row[E.cy].size;
+				E.cx = E.row[E.cy].size+E.ln_length;
 			}
 			break;
 		case ARROW_RIGHT:
 			//check if cursor is to the left of the end of the current line
-			if (row && E.cx < row->size){
+			if (row && E.cx < row->size + E.ln_length){
 				E.cx++;
 			}
-			else if (row && E.cx == row->size){
+			else if (row && E.cx == row->size + E.ln_length){
 				E.cy++;
 				E.cx = 0;
 			}
@@ -1027,7 +1043,7 @@ void editorMoveCursor(int key){
 
 	//Correct x pos if past the end of the current row
 	row = (E.cy >= E.numrows) ? NULL : &E.row[E.cy];
-	int rowlen = row ? row->size : 0;
+	int rowlen = row ? row->size + E.ln_length : 0;
 	if (E.cx > rowlen){
 		E.cx = rowlen;
 	}
@@ -1122,6 +1138,7 @@ void initEditor(){
 	E.statusmsg[0] = '\0';
 	E.statusmsg_time = 0;
 	E.syntax = NULL;
+	E.ln_length = 0;
 
 	if (getWindowSize(&E.screenrows, &E.screencols) == -1) die("getWindowSize");
 	//Make room for status bar
