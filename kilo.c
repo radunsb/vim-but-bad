@@ -2,7 +2,6 @@
 STUFF ABOUT THE PROGRAM GOES HERE
 ***/
 
-
 /*** INCLUDES ***/
 
 #define _DEFAULT_SOURCE
@@ -86,6 +85,7 @@ struct editorConfig{
 	int screenrows;
 	int screencols;
 	int numrows;
+	int ln_length;
 	erow *row;
 	int dirty;
 	char *filename;
@@ -93,7 +93,6 @@ struct editorConfig{
 	time_t statusmsg_time;
 	struct editorSyntax *syntax;
 	struct termios orig_termios;
-	int ln_length;
 };
 
 struct editorConfig E;
@@ -474,8 +473,7 @@ void editorInsertRow(int at, char *s, size_t len){
 	for (int j = at + 1; j <= E.numrows; j++) E.row[j].idx++;
 
 	E.row[at].idx = at;
-	
-	len += E.ln_length;
+
 	//copy the chars of s into the erow
 	E.row[at].size = len;
 	E.row[at].chars = malloc(len+1);
@@ -552,21 +550,21 @@ void editorInsertChar(int c){
 //
 void editorInsertNewline(){
 	//if we're at the beginning of the row, just insert a row where you are
-	if (E.cx == 0){
+	if (E.cx <= E.ln_length){
 		editorInsertRow(E.cy, "", 0);
 	}
 	//otherwise, move all the characters after the cursor to the new line when making it
 	else{
 		erow *row = &E.row[E.cy];
-		editorInsertRow(E.cy + 1, &row->chars[E.cx], row->size - E.cx);
+		editorInsertRow(E.cy + 1, &row->chars[E.cx - E.ln_length], row->size - (E.cx - E.ln_length));
 		//inserting calls realloc() which might move memory around, so reassign row
 		row = &E.row[E.cy];
-		row->size = E.cx;
+		row->size = E.cx - E.ln_length;
 		row->chars[row->size] = '\0';
 		editorUpdateRow(row);
 	}
 	E.cy++;
-	E.cx = 0;
+	E.cx = E.ln_length;
 }
 
 //Call the row operation for deletion and move the cursor
@@ -584,7 +582,7 @@ void editorDelChar(){
 	}
 	//delete row if on the first character of the row
 	else {
-		E.cx = E.row[E.cy - 1].size;
+		E.cx = E.row[E.cy - 1].size + E.ln_length;
 		editorRowAppendString(&E.row[E.cy - 1], row->chars, row->size);
 		editorDelRow(E.cy);
 		E.cy--;
@@ -802,24 +800,32 @@ void editorScroll(){
 	}
 }
 
+void configureLNLength(){
+//Figure out the max number of digits in a line number, add that (plus one) to editorConfig
+	int lineNumLen = 0;
+	int n = E.numrows;
+	do {
+		n /= 10;
+		lineNumLen++;
+	} while (n != 0);
+	E.ln_length = lineNumLen + 1;
+}
+
 void editorDrawRows(struct abuf *ab){
 	int y;
+	configureLNLength();
 	for (y = 0; y < E.screenrows; y++) {
-		int lineNumLen = 0;
-		int n = E.numrows;
-		do {
-			n /= 10;
-			lineNumLen++;
-		} while (n != 0);
 		int filerow = y + E.rowoff;
-		char filerowstr[lineNumLen];
-		sprintf(filerowstr, "%d", filerow);
-		int numberPadding = lineNumLen - strlen(filerowstr);
-		memset(filerowstr + strlen(filerowstr), ' ', numberPadding);
-		abAppend(ab, filerowstr, lineNumLen);
-		abAppend(ab, "|", 1);
-		E.ln_length = lineNumLen + 1;
-		if(E.cx < E.ln_length) E.cx = E.ln_length;
+
+		//Construct the line number  (format #### |)
+		char lnString[E.ln_length + 1];
+		sprintf(lnString, "%d", filerow);
+		const char *padding = "                                                   ";
+		int padLen = (E.ln_length-1) - strlen(lnString);
+		if (padLen < 0) padLen = 0;
+		char lnPrint[E.ln_length + 1];
+		sprintf(lnPrint, "%s%*.*s|", lnString, padLen, padLen, padding);
+		abAppend(ab, lnPrint, E.ln_length);
 		if (filerow >= E.numrows){
 			//Create welcome message a third of the way down the screen
 			//Only if there isn't a file being loaded
@@ -841,7 +847,7 @@ void editorDrawRows(struct abuf *ab){
 				abAppend(ab, "~", 1);
 			}
 		}
-		else {
+		else{
 			int len = E.row[filerow].rsize - E.coloff;
 			if (len < 0) len = 0;
 			if (len > E.screencols) len = E.screencols;
@@ -939,6 +945,9 @@ void editorRefreshScreen(){
 	abAppend(&ab, "\x1b[H", 3);
 
 	editorDrawRows(&ab);
+	//Stupid little check to make sure our cursor isn't in the line numbers
+	if(E.cx < E.ln_length) E.cx = E.ln_length;
+
 	editorDrawStatusBar(&ab);
 	editorDrawMessageBar(&ab);
 
@@ -1010,13 +1019,13 @@ void editorMoveCursor(int key){
 	//Use WASD to move the cursor
 	switch (key) {
 		case ARROW_LEFT:
-			if(E.cx != E.ln_length){
+			if(E.cx > E.ln_length){
 				E.cx--;
 			}
 			//If at beginning of row, move to the end of the row above this one
 			else if (E.cy > 0){
 				E.cy--;
-				E.cx = E.row[E.cy].size+E.ln_length;
+				E.cx = E.row[E.cy].size + E.ln_length;
 			}
 			break;
 		case ARROW_RIGHT:
@@ -1026,7 +1035,7 @@ void editorMoveCursor(int key){
 			}
 			else if (row && E.cx == row->size + E.ln_length){
 				E.cy++;
-				E.cx = 0;
+				E.cx = E.ln_length;
 			}
 			break;
 		case ARROW_UP:
@@ -1047,6 +1056,8 @@ void editorMoveCursor(int key){
 	if (E.cx > rowlen){
 		E.cx = rowlen;
 	}
+	//Correct x pos if it is in the line number
+	if (E.cx < E.ln_length) E.cx = E.ln_length;
 }
 
 void editorProcessKeypress(){
@@ -1132,13 +1143,13 @@ void initEditor(){
 	E.rowoff = 0;
 	E.coloff = 0;
 	E.numrows = 0;
+	E.ln_length = 0;
 	E.row = NULL;
 	E.dirty = 0;
 	E.filename = NULL;
 	E.statusmsg[0] = '\0';
 	E.statusmsg_time = 0;
 	E.syntax = NULL;
-	E.ln_length = 0;
 
 	if (getWindowSize(&E.screenrows, &E.screencols) == -1) die("getWindowSize");
 	//Make room for status bar
@@ -1150,6 +1161,8 @@ int main(int argc, char *argv[]){
 	initEditor();
 	if (argc >= 2){
 		editorOpen(argv[1]);
+		configureLNLength();
+		E.cx = E.ln_length;
 	}
 
 	editorSetStatusMessage("HELP: Ctrl-S = save | Ctrl-Q = quit | Ctrl-F = find");
@@ -1160,4 +1173,3 @@ int main(int argc, char *argv[]){
 	}
 	return 0;
 }
-
