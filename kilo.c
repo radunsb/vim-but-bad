@@ -4,6 +4,7 @@ STUFF ABOUT THE PROGRAM GOES HERE
 
 /*** INCLUDES ***/
 
+
 #define _DEFAULT_SOURCE
 #define _BSD_SOURCE
 #define _GNU_SOURCE
@@ -901,19 +902,22 @@ void editorDrawStatusBar(struct abuf *ab){
 	//Switches to inverted color formatting
 	abAppend(ab, "\x1b[7m", 4);
 	//row status, NOT render status lol
-	char status[80], rstatus[80];
+	char status[80], posstatus[80], rstatus[80];
 	//Print the filename or a default if there isn't a file
 	int len = snprintf(status, sizeof(status), "%.20s - %d lines %s",
 		E.filename ? E.filename : "[No Name]", E.numrows,
 		E.dirty ? "(modified)" : "");
 	//Display no ft if E.syntax is NULL
 	int rlen = snprintf(rstatus, sizeof(rstatus), "%s | %d/%d",
-		E.syntax ? E.syntax->filetype : "no ft", E.cy + 1, E.numrows);
+		E.syntax ? E.syntax->filetype : "no ft", E.cy, E.numrows);
 	if (len > E.screencols) len = E.screencols;
+	int poslen = snprintf(posstatus, sizeof(posstatus), " || X: %d | Y: %d",
+		E.cx - E.ln_length, E.cy);
 	abAppend(ab, status, len);
+	abAppend(ab, posstatus, poslen);
 	//Fill with empty spaces
-	while (len < E.screencols){
-		if (E.screencols - len == rlen){
+	while (len+poslen < E.screencols){
+		if (E.screencols - (len+poslen) == rlen){
 			abAppend(ab, rstatus, rlen);
 			break;
 		}
@@ -1161,9 +1165,9 @@ int main(int argc, char *argv[]){
 	initEditor();
 	if (argc >= 2){
 		editorOpen(argv[1]);
-		configureLNLength();
-		E.cx = E.ln_length;
 	}
+	configureLNLength();
+	E.cx = E.ln_length;
 
 	editorSetStatusMessage("HELP: Ctrl-S = save | Ctrl-Q = quit | Ctrl-F = find");
 
