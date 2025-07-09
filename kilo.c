@@ -415,12 +415,12 @@ void editorSelectSyntaxHighlight(){
 
 //Convert cursor position in the raw string to cursor position in the rendered string
 int editorRowCxToRx(erow *row, int cx){
-	int rx = 0;
+	int rx = E.ln_length;
 	int j;
 	//Adjust for TABS
-	for (j = 0; j < cx; j++){
-		if(row->chars[j] == '\t')
-			rx += (KILO_TAB_STOP - 1) - (rx % KILO_TAB_STOP);
+	for (j = E.ln_length; j < cx; j++){
+		if(row->chars[j-E.ln_length] == '\t')
+			rx += (KILO_TAB_STOP - 1) - ((rx-E.ln_length) % KILO_TAB_STOP);
 		rx++;
 	}
 	return rx;
